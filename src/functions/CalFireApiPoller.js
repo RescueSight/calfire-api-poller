@@ -66,11 +66,18 @@ async function fetchCalFireData(context) {
             }
 
             const data = await response.json();
-            
+            context.log(`Received response from CalFire API: ${JSON.stringify(data)}`);
+
             // Validate response structure
             if (!Array.isArray(data)) {
                 throw new Error('Invalid response format: expected array');
             }
+
+            context.log(`Received ${data.length} incidents from CalFire API`);
+            if (data.length === 0) {
+                context.log.warn('No incidents found in response');
+            }
+            
 
             return data;
 
