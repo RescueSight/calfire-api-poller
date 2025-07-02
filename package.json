@@ -1,0 +1,10 @@
+{
+    "name": "calfire-monitor-function",
+    "version": "1.0.0",
+    "description": "Azure Function to monitor CalFire API",
+    "main": "src/functions/*.js",
+    "dependencies": {
+      "@azure/functions": "^4.0.0",
+      "@azure/cosmos": "^4.0.0"
+    }
+  }
