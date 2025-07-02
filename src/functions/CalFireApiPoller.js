@@ -66,7 +66,6 @@ async function fetchCalFireData(context) {
             }
 
             const data = await response.json();
-            context.log(`Received response from CalFire API: ${JSON.stringify(data)}`);
 
             // Validate response structure
             if (!Array.isArray(data)) {
@@ -100,6 +99,8 @@ async function fetchCalFireData(context) {
 async function processAndSaveIncidents(incidents, context) {
     const results = { new: 0, updated: 0, errors: 0 };
     const batchSize = 25; // Process in batches to avoid overwhelming Cosmos DB
+
+    context.log(`Processing ${incidents.length} incidents in batches of ${batchSize}`);
     
     for (let i = 0; i < incidents.length; i += batchSize) {
         const batch = incidents.slice(i, i + batchSize);
