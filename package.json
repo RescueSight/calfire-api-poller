@@ -4,7 +4,8 @@
     "description": "Azure Function to monitor CalFire API",
     "main": "src/functions/*.js",
     "dependencies": {
-      "@azure/functions": "^4.0.0",
-      "@azure/cosmos": "^4.0.0"
+        "@azure/cosmos": "^4.0.0",
+        "@azure/functions": "^4.0.0",
+        "node-fetch": "^2.7.0"
     }
-  }
+}

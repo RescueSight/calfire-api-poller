@@ -107,6 +107,9 @@ async function processAndSaveIncidents(incidents, context) {
         const batchPromises = batch.map(incident => processIncident(incident, context));
         
         const batchResults = await Promise.allSettled(batchPromises);
+
+        context.log(`Processed batch ${Math.floor(i / batchSize) + 1} of ${Math.ceil(incidents.length / batchSize)}`);
+        context.log(`Batch results: ${batchResults.length} processed, ${batchResults.filter(r => r.status === 'fulfilled').length} successful`);
         
         batchResults.forEach((result, index) => {
             if (result.status === 'fulfilled') {
