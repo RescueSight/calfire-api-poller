@@ -7,8 +7,6 @@ const cosmosClient = new CosmosClient({
     key: process.env.COSMOS_DB_KEY,
 });
 
-context.log('Initializing Cosmos DB client with endpoint:', process.env.COSMOS_DB_ENDPOINT, 'cosmos key:', process.env.COSMOS_DB_KEY);
-
 const database = cosmosClient.database(process.env.COSMOS_DB_DATABASE || 'CalFireDB');
 const container = database.container(process.env.COSMOS_DB_CONTAINER || 'Alerts');
 
@@ -253,6 +251,7 @@ app.http('ManualCalFireSync', {
     authLevel: 'function',
     handler: async (request, context) => {
         context.log('Manual CalFire sync triggered');
+        context.log('Initializing Cosmos DB client with endpoint:', process.env.COSMOS_DB_ENDPOINT, 'cosmos key:', process.env.COSMOS_DB_KEY);
         
         try {
             const incidents = await fetchCalFireData(context);
