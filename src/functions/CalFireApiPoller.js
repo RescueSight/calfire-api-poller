@@ -15,9 +15,9 @@ const CALFIRE_API_URL = 'https://incidents.fire.ca.gov/umbraco/api/IncidentApi/L
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 5000; // 5 seconds
 
-// Timer trigger function - runs every 10 minutes
+// Timer trigger function - runs every 6 hours
 app.timer('CalFireApiPoller', {
-    schedule: '0 */10 * * * *', // Every 10 minutes
+    schedule: '0 0 */6 * * *', // Every 6 hours
     handler: async (myTimer, context) => {
         context.log('CalFire API Poller started at:', new Date().toISOString());
         
@@ -35,7 +35,7 @@ app.timer('CalFireApiPoller', {
             // Process and save incidents to Cosmos DB
             const results = await processAndSaveIncidents(incidents, context);
             
-            context.log(`Processing complete: ${results.new} new, ${results.updated} updated, ${results.errors} errors`);
+            context.log(`Processing complete: ${results.new} new, ${results.updated} updated, ${results.existing} existing, ${results.errors} errors`);
             
         } catch (error) {
             context.log.error('Fatal error in CalFire API Poller:', error);
@@ -55,8 +55,9 @@ async function fetchCalFireData(context) {
             const response = await fetch(CALFIRE_API_URL, {
                 method: 'GET',
                 headers: {
-                    'User-Agent': 'CalFireMonitor/1.0',
-                    'Accept': 'application/json'
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Accept': 'application/json',
+                    'Referer': 'https://www.fire.ca.gov/incidents/'
                 },
                 timeout: 30000 // 30 second timeout
             });
@@ -71,12 +72,6 @@ async function fetchCalFireData(context) {
             if (!Array.isArray(data)) {
                 throw new Error('Invalid response format: expected array');
             }
-
-            context.log(`Received ${data.length} incidents from CalFire API`);
-            if (data.length === 0) {
-                context.log.warn('No incidents found in response');
-            }
-            
 
             return data;
 
@@ -97,24 +92,20 @@ async function fetchCalFireData(context) {
  * Process incidents and save to Cosmos DB
  */
 async function processAndSaveIncidents(incidents, context) {
-    const results = { new: 0, updated: 0, errors: 0 };
+    const results = { new: 0, updated: 0, existing: 0, errors: 0 };
     const batchSize = 25; // Process in batches to avoid overwhelming Cosmos DB
-
-    context.log(`Processing ${incidents.length} incidents in batches of ${batchSize}`);
     
     for (let i = 0; i < incidents.length; i += batchSize) {
         const batch = incidents.slice(i, i + batchSize);
         const batchPromises = batch.map(incident => processIncident(incident, context));
         
         const batchResults = await Promise.allSettled(batchPromises);
-
-        context.log(`Processed batch ${Math.floor(i / batchSize) + 1} of ${Math.ceil(incidents.length / batchSize)}`);
-        context.log(`Batch results: ${batchResults.length} processed, ${batchResults.filter(r => r.status === 'fulfilled').length} successful`);
         
         batchResults.forEach((result, index) => {
             if (result.status === 'fulfilled') {
                 if (result.value === 'new') results.new++;
                 else if (result.value === 'updated') results.updated++;
+                else if (result.value === 'existing') results.existing++;
             } else {
                 results.errors++;
                 context.log.error(`Error processing incident ${batch[index]?.UniqueId}:`, result.reason);
@@ -165,18 +156,28 @@ async function processIncident(incident, context) {
         try {
             const { resource: existingIncident } = await container.item(incident.UniqueId, incident.UniqueId).read();
             
-            // Compare Updated timestamps to see if we need to update
-            if (existingIncident && existingIncident.Updated !== incident.Updated) {
-                // Update existing incident
-                processedIncident.firstSeenAt = existingIncident.firstSeenAt; // Preserve original timestamp
-                processedIncident.updateCount = (existingIncident.updateCount || 0) + 1;
+            if (existingIncident) {
+                // Compare Updated timestamps to see if we need to update
+                if (existingIncident.Updated !== incident.Updated) {
+                    // Update existing incident
+                    processedIncident.firstSeenAt = existingIncident.firstSeenAt; // Preserve original timestamp
+                    processedIncident.updateCount = (existingIncident.updateCount || 0) + 1;
+                    
+                    await container.item(incident.UniqueId, incident.UniqueId).replace(processedIncident);
+                    context.log(`Updated incident: ${incident.Name} (${incident.UniqueId})`);
+                    return 'updated';
+                }
                 
-                await container.item(incident.UniqueId, incident.UniqueId).replace(processedIncident);
-                context.log(`Updated incident: ${incident.Name} (${incident.UniqueId})`);
-                return 'updated';
+                return 'existing'; // No update needed
+            } else {
+                // Treat as new if existingIncident is undefined
+                processedIncident.firstSeenAt = new Date().toISOString();
+                processedIncident.updateCount = 0;
+                
+                await container.items.create(processedIncident);
+                context.log(`New incident saved: ${incident.Name} (${incident.UniqueId})`);
+                return 'new';
             }
-            
-            return 'existing'; // No update needed
             
         } catch (error) {
             if (error.code === 404) {
@@ -233,10 +234,8 @@ function isRecentIncident(startedDate) {
  */
 function calculateSeverityLevel(incident) {
     const acres = incident.AcresBurned || 0;
-    const contained = incident.PercentContained || 0;
     
     if (acres === 0) return 'minimal';
-    
     if (acres >= 10000) return 'extreme';
     if (acres >= 5000) return 'high';
     if (acres >= 1000) return 'moderate';
@@ -251,10 +250,22 @@ app.http('ManualCalFireSync', {
     authLevel: 'function',
     handler: async (request, context) => {
         context.log('Manual CalFire sync triggered');
-        context.log('Initializing Cosmos DB client with endpoint:', process.env.COSMOS_DB_ENDPOINT, 'cosmos key:', process.env.COSMOS_DB_KEY);
         
         try {
             const incidents = await fetchCalFireData(context);
+            
+            if (!incidents || incidents.length === 0) {
+                return {
+                    status: 200,
+                    jsonBody: {
+                        success: true,
+                        message: 'No incidents found from CalFire API',
+                        results: { new: 0, updated: 0, existing: 0, errors: 0 },
+                        timestamp: new Date().toISOString()
+                    }
+                };
+            }
+            
             const results = await processAndSaveIncidents(incidents, context);
             
             return {
@@ -263,6 +274,7 @@ app.http('ManualCalFireSync', {
                     success: true,
                     message: 'Sync completed successfully',
                     results: results,
+                    incidentsProcessed: incidents.length,
                     timestamp: new Date().toISOString()
                 }
             };
@@ -306,6 +318,50 @@ app.http('HealthCheck', {
                 status: 503,
                 jsonBody: {
                     status: 'unhealthy',
+                    error: error.message,
+                    timestamp: new Date().toISOString()
+                }
+            };
+        }
+    }
+});
+
+// Data check endpoint for monitoring
+app.http('CheckData', {
+    methods: ['GET'],
+    authLevel: 'anonymous',
+    route: 'data',
+    handler: async (request, context) => {
+        try {
+            const querySpec = {
+                query: 'SELECT TOP 10 * FROM c ORDER BY c.processedAt DESC'
+            };
+            const { resources } = await container.items.query(querySpec).fetchAll();
+            
+            const countQuerySpec = {
+                query: 'SELECT VALUE COUNT(1) FROM c'
+            };
+            const { resources: countResult } = await container.items.query(countQuerySpec).fetchAll();
+            
+            return {
+                status: 200,
+                jsonBody: {
+                    totalIncidents: countResult[0] || 0,
+                    recentIncidents: resources.slice(0, 5).map(incident => ({
+                        id: incident.id,
+                        name: incident.Name,
+                        location: incident.Location,
+                        processedAt: incident.processedAt,
+                        severityLevel: incident.severityLevel,
+                        isActive: incident.IsActive
+                    })),
+                    timestamp: new Date().toISOString()
+                }
+            };
+        } catch (error) {
+            return {
+                status: 500,
+                jsonBody: {
                     error: error.message,
                     timestamp: new Date().toISOString()
                 }
