@@ -5,7 +5,7 @@
     "main": "src/functions/*.js",
     "dependencies": {
         "@azure/cosmos": "^4.0.0",
-        "@azure/functions": "^4.0.0",
+        "@azure/functions": "^4.11.2",
         "dotenv": "^17.0.1",
         "node-fetch": "^2.7.0"
     }
